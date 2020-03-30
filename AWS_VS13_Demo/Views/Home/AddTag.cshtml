@@ -1,0 +1,38 @@
+﻿@model AWS_VS13_Demo.Models.AddTag
+
+@{
+    ViewBag.Title = "AddTag";
+}
+
+<h2>AddTag</h2>
+
+@using (Html.BeginForm()) {
+    @Html.ValidationSummary(true)
+
+    <fieldset>
+        <legend>AddTagsRequest</legend>
+
+        <div class="editor-label">
+            @Html.DropDownListFor(model => model.BucketName, new SelectList(ViewBag.Buckets, "BucketName", "BucketName"))
+        </div>
+
+        <div class="editor-label">
+            @Html.LabelFor(model => model.key)
+        </div>
+        <div class="editor-field">
+            @Html.EditorFor(model => model.value)
+        </div>
+
+        <p>
+            <input type="submit" value="Create" />
+        </p>
+    </fieldset>
+}
+
+<div>
+    @Html.ActionLink("Back to List", "Index")
+</div>
+
+@section Scripts {
+    @Scripts.Render("~/bundles/jqueryval")
+}

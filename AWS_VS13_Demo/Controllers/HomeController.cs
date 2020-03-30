@@ -14,11 +14,63 @@ namespace AWS_VS13_Demo.Controllers
         public ActionResult Index()
         {
             AwsS3Client s3Client = new AwsS3Client();
-            var a = s3Client.getBucketLocation("abtests3bucket");
-            //var addresult = s3Client.addBucketTagging("abtests3bucket", new List<Tag>() { new Tag() { Key = "abtest", Value = "abtest" } });
-            AwsS3Client s3Client1 = new AwsS3Client(a.Data as RegionEndpoint);
-            var b = s3Client1.getBuckettagging("abtests3bucket");
 
+            List<Tag> Tags = new List<Tag>();
+            List<S3Bucket> buckets = new List<S3Bucket>();
+            var result = s3Client.getBucketList();
+
+            if (!result.Error)
+                buckets = result.Data as List<S3Bucket>;
+
+            ViewBag.Buckets = buckets;
+
+            //var a = s3Client.getBucketLocation("abtests3bucket");
+            ////var addresult = s3Client.addBucketTagging("abtests3bucket", new List<Tag>() { new Tag() { Key = "abtest", Value = "abtest" } });
+            //AwsS3Client s3Client1 = new AwsS3Client(a.Data as RegionEndpoint);
+            //var b = s3Client1.getBuckettagging("abtests3bucket");
+
+            return View(Tags);
+        }
+
+        [HttpPost]
+        public ActionResult SearchTag(string BucketName)
+        {
+            AwsS3Client s3Client = new AwsS3Client();
+
+            List<S3Bucket> buckets = new List<S3Bucket>();
+            List<Tag> Tags = new List<Tag>();
+
+            var result = s3Client.getBucketList();
+
+            if (!result.Error)
+                buckets = result.Data as List<S3Bucket>;
+
+            ViewBag.Buckets = buckets;
+
+            var tagresult = s3Client.getBuckettagging(BucketName);
+
+            if (!tagresult.Error)
+                Tags = tagresult.Data as List<Tag>;
+
+            return View("Index", Tags);
+        }
+
+        [HttpGet]
+        public ActionResult AddTag()
+        {
+            AwsS3Client s3Client = new AwsS3Client();
+            List<S3Bucket> buckets = new List<S3Bucket>();
+            var result = s3Client.getBucketList();
+            if (!result.Error)
+                buckets = result.Data as List<S3Bucket>;
+            ViewBag.Buckets = buckets;
+
+            return View();
+        }
+
+        [HttpPost]
+        public ActionResult AddTag(string BuketName, string key , string value)
+        {
             return View();
         }
 
