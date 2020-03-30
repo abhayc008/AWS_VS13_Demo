@@ -1,6 +1,7 @@
 ﻿using Amazon;
 using Amazon.S3.Model;
 using AWS_Helper.Concrete;
+using AWS_VS13_Demo.Models;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -69,8 +70,30 @@ namespace AWS_VS13_Demo.Controllers
         }
 
         [HttpPost]
-        public ActionResult AddTag(string BuketName, string key , string value)
+        public ActionResult AddTag(AddTag objAddTag)
         {
+
+            AwsS3Client s3Client = new AwsS3Client();
+            List<S3Bucket> buckets = new List<S3Bucket>();
+            List<Tag> Tags = new List<Tag>();
+            var result = s3Client.getBucketList();
+            if (!result.Error)
+                buckets = result.Data as List<S3Bucket>;
+            ViewBag.Buckets = buckets;
+
+            var existingTagsResult = s3Client.getBuckettagging(objAddTag.BucketName);
+            if (!existingTagsResult.Error)
+                Tags = existingTagsResult.Data as List<Tag>;
+
+            Tags.Add(new Tag() { Key = objAddTag.key, Value = objAddTag.value });
+
+            var AddTagsResult = s3Client.addBucketTagging(objAddTag.BucketName, Tags);
+
+            if(!AddTagsResult.Error)
+            {
+                RedirectToAction("SearchTag", new { BucketName = objAddTag.BucketName });
+            }
+
             return View();
         }
 
