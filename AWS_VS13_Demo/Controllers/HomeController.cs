@@ -89,7 +89,7 @@ namespace AWS_VS13_Demo.Controllers
 
             var AddTagsResult = s3Client.addBucketTagging(objAddTag.BucketName, Tags);
 
-            if(!AddTagsResult.Error)
+            if (!AddTagsResult.Error)
             {
                 RedirectToAction("SearchTag", new { BucketName = objAddTag.BucketName });
             }
@@ -97,5 +97,35 @@ namespace AWS_VS13_Demo.Controllers
             return View();
         }
 
+        [HttpGet]
+        public ActionResult DeleteTag()
+        {
+            AwsS3Client s3Client = new AwsS3Client();
+            List<S3Bucket> buckets = new List<S3Bucket>();
+            var result = s3Client.getBucketList();
+            if (!result.Error)
+                buckets = result.Data as List<S3Bucket>;
+            ViewBag.Buckets = buckets;
+
+            return View();
+        }
+
+        [HttpPost]
+        public ActionResult DeleteTag(string BucketName)
+        {
+            AwsS3Client s3Client = new AwsS3Client();
+            List<S3Bucket> buckets = new List<S3Bucket>();
+            List<Tag> Tags = new List<Tag>();
+            var result = s3Client.getBucketList();
+            if (!result.Error)
+                buckets = result.Data as List<S3Bucket>;
+            ViewBag.Buckets = buckets;
+
+            var Result = s3Client.deleteBucketTagging(BucketName);
+            if (!Result.Error)
+                return View("Index");
+            else
+                return View();
+        }
     }
 }

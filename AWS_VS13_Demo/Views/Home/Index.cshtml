@@ -1,34 +1,40 @@
 ﻿@model List<Amazon.S3.Model.Tag>
 
-<div id="body">
-    <section class="featured">
-        <div class="content-wrapper">
-            <form action="@Url.Action("SearchTag","Home")" method="post">
+@{
+    ViewBag.Title = "Tag List";
+}
+
+<form action="@Url.Action("SearchTag","Home")" method="post">
+    
+    <fieldset>
+        <legend>Tag List</legend>
+
+        <div class="form-group row">
+            <div class="col-sm-3">
                 @Html.DropDownList("BucketName", new SelectList(ViewBag.Buckets, "BucketName", "BucketName"), new { @class = "form-control" })
-
-                <input type="submit" value="Search" />
-            </form>
-            <p>
-
-            </p>
-
-            @if (Model.Count > 0)
-            {
-                <table class="table table-striped table-bordered table-hover table-full-width dataTable">
-                    <tr>
-                        <th>Key</th>
-                        <th>Value</th>
-                    </tr>
-                    @foreach (var item in Model)
-                    {
-                        <tr>
-                            <td>@item.Key</td>
-                            <td>@item.Value</td>
-                        </tr>
-                    }
-                </table>
-            }
+            </div>
+            <div class="col-sm-9">
+                <input type="submit" value="Search" class="btn btn-info" />
+            </div>
         </div>
-    </section>
 
-</div>
+    </fieldset>
+
+</form>
+
+@if (Model.Count > 0)
+{
+    <table class="table table-striped table-bordered table-hover table-full-width dataTable">
+        <tr>
+            <th>Key</th>
+            <th>Value</th>
+        </tr>
+        @foreach (var item in Model)
+        {
+            <tr>
+                <td>@item.Key</td>
+                <td>@item.Value</td>
+            </tr>
+        }
+    </table>
+}

@@ -1,0 +1,29 @@
+﻿@{
+    ViewBag.Title = "Delete Tag";
+}
+
+@using (Html.BeginForm())
+{
+
+
+    <fieldset>
+        <legend>Delete Tag</legend>
+
+        <div class="form-group row">
+            <div class="col-sm-3">
+                @Html.DropDownList("BucketName", new SelectList(ViewBag.Buckets, "BucketName", "BucketName"), new { @class = "form-control" })
+            </div>
+            <div class="col-sm-9">
+                <input type="submit" value="Search" class="btn btn-info" />
+            </div>
+        </div>
+    </fieldset>
+}
+
+<div>
+    @Html.ActionLink("Back", "Index")
+</div>
+
+@section Scripts {
+    @Scripts.Render("~/bundles/jqueryval")
+}
