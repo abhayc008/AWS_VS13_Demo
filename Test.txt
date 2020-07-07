@@ -1,0 +1,1233 @@
+#region Generate SP SOA files
+
+        public ObjResult<string> CheckIsSPSOAExists(SPSOAModel objSPSOAModel)
+        {
+            ObjResult<string> Result = new ObjResult<string>();
+
+            try
+            {
+                DataTable dtResult = new DataTable();
+
+                //var Store = GetStore();
+                //dtResult = Store.GetDataTable("[dbo].[Check_IsSPSOAExists]", null, false);
+
+                string _strSqlConn = System.Configuration.ConfigurationManager.ConnectionStrings["SPSOAConnectionString"].ConnectionString;
+                DataSet ds = GetDataSet("[dbo].[Check_IsSPSOAExists]", new { objSPSOAModel.SOADate }, false, _strSqlConn);
+                if (ds != null && ds.Tables.Count > 0)
+                {
+                    dtResult = ds.Tables[0];
+                }
+
+                if (dtResult.Rows.Count > 0)
+                {
+                    Result.Value = Convert.ToString(dtResult.Rows[0][0]);
+                }
+                else
+                {
+                    Result.Value = "Error While checking Generated SP SOA";
+                }
+
+                Result.Error = 0;
+                Result.ErrorMsg = "";
+                return Result;
+            }
+            catch (Exception ex)
+            {
+                Result.Error = 1;
+                Result.ErrorMsg = ex.Message;
+                Result.Value = "";
+                return Result;
+            }
+        }
+
+        public ObjResult<string> GenerateSPSOAFiles(SPSOAModel objSPSOAModel)
+        {
+            ObjResult<string> Result = new ObjResult<string>();
+            try
+            {
+                string SPS_ECSL_DATE = objSPSOAModel.SOADate.ToString("yyyyMMdd");
+
+                var SPSOAPath = System.Configuration.ConfigurationManager.AppSettings["SPSOA_BasePath"];
+
+                string Original_SPSOA_Path = SPSOAPath + "\\" + SPS_ECSL_DATE + "\\SPS without password\\";
+                if (!Directory.Exists(Original_SPSOA_Path))
+                {
+                    Result.Error = 1;
+                    Result.ErrorMsg = "WS SOA files path not exists.";
+                    Result.Value = "";
+                    return Result;
+                }
+                else
+                {
+                    if (Directory.GetFiles(Original_SPSOA_Path).Count() == 0)
+                    {
+                        Result.Error = 1;
+                        Result.ErrorMsg = "WS SOA files not exists.";
+                        Result.Value = "";
+                        return Result;
+                    }
+                }
+
+
+                #region Get SP Product datils
+                DataTable dtSPProductsList = GetSPProductsList();
+
+                if (dtSPProductsList == null || dtSPProductsList.Rows.Count < 1)
+                {
+                    Result.Error = 1;
+                    Result.ErrorMsg = "SP Product details not found.";
+                    Result.Value = "";
+                    return Result;
+                }
+
+                #endregion
+
+                #region Get Active client from Genie
+                DataTable dtActiveUsers = GetActiveClientFromGenie();
+
+                if (dtActiveUsers == null || dtActiveUsers.Rows.Count < 1)
+                {
+                    Result.Error = 1;
+                    Result.ErrorMsg = "Active users not found.";
+                    Result.Value = "";
+                    return Result;
+                }
+
+                DataColumn sogenerate = new DataColumn("SOA_Generated");
+                sogenerate.ReadOnly = false;
+                dtActiveUsers.Columns.Add(sogenerate);
+
+                #endregion
+
+                #region Get Client from WS API
+                var objlist = GetClientDetails(); // WS API
+
+                if (objlist == null || objlist.Count == 0)
+                {
+                    Result.Error = 1;
+                    Result.ErrorMsg = "Data not found in WS API.";
+                    Result.Value = "";
+                    return Result;
+                }
+                #endregion
+
+                List<string> SOAGeneratedUCC = new List<string>();
+
+                List<SPSOA_ClientInfo> ClientNotPresentInAPI = new List<SPSOA_ClientInfo>();
+                List<SPSOA_ClientInfo> APIproductNotPresentInSPFile = new List<SPSOA_ClientInfo>();
+
+                var PdfFilePath = System.Configuration.ConfigurationManager.AppSettings["SPSOA_PdfFilePath"];
+                var SPSOAFolderName = System.Configuration.ConfigurationManager.AppSettings["SPSOA_FolderName"];
+                PdfFilePath = PdfFilePath.Replace("{SPSOA_FolderName}", SPSOAFolderName);
+
+                // Create SOA Folder if not exists
+                if (!Directory.Exists(SPSOAPath + "\\" + SPSOAFolderName))
+                    Directory.CreateDirectory(SPSOAPath + "\\" + SPSOAFolderName);
+
+                var PdfPathDirectory = PdfFilePath + "\\" + SPS_ECSL_DATE;
+
+                if (!Directory.Exists(PdfPathDirectory))
+                    Directory.CreateDirectory(PdfPathDirectory);
+
+                // Generate 2 pager SP pdf for clients
+                foreach (DataRow item in dtActiveUsers.Rows)
+                {
+                    var lstSelectedClient = objlist.Where(x => x.UCCCODE == Convert.ToString(item["UCCCODE"]).Trim()).ToList<PMS_WS_Client>();
+
+                    List<string> Pages = new List<string>();
+
+                    // Add if UCCCode present in genie and not in API
+                    if (lstSelectedClient.Count == 0)
+                        ClientNotPresentInAPI.Add(new SPSOA_ClientInfo() { ClientCode = Convert.ToString(item["UCCCODE"]).Trim() });
+
+                    foreach (var clientInfo in lstSelectedClient)
+                    {
+                        DataRow dr = dtSPProductsList.AsEnumerable().Where(a => a.Field<string>("Product Code") == clientInfo.SERIESCODE).FirstOrDefault();
+
+                        if (dr != null)
+                        {
+                            string str = GetHTML(dr, clientInfo);
+                            Pages.Add(str);
+                        }
+                        else
+                        {
+                            // Add if UCCCode present in genie and not in API
+                            APIproductNotPresentInSPFile.Add(new SPSOA_ClientInfo() { ClientCode = clientInfo.UCCCODE, ProductCode = clientInfo.SERIESCODE });
+                        }
+                    }
+
+                    if (Pages.Count > 0)
+                    {
+                        Document pdfDoc = new Document(PageSize.A4, 30f, 30f, 10f, 10f);
+                        HTMLWorker htmlparser = new HTMLWorker(pdfDoc);
+
+                        using (MemoryStream memoryStream = new MemoryStream())
+                        {
+                            PdfWriter writer = PdfWriter.GetInstance(pdfDoc, memoryStream);
+
+                            pdfDoc.Open();
+
+                            foreach (var page in Pages)
+                            {
+                                StringReader srReader = new StringReader(page);
+
+                                pdfDoc.NewPage();
+                                htmlparser.Parse(srReader);
+                            }
+
+                            pdfDoc.Close();
+
+                            byte[] bytes = memoryStream.ToArray();
+
+                            File.WriteAllBytes(PdfPathDirectory + "\\" + lstSelectedClient[0].UCCCODE + ".pdf", bytes);
+
+                            memoryStream.Close();
+                        }
+                    }
+                }
+
+                // Call function to compare generate pdf
+                CompareAndMergePdfs(SPS_ECSL_DATE, dtActiveUsers, ref SOAGeneratedUCC);
+
+                // Update SP SOA Generated Status
+                DataTable dtActiveUsers_New = dtActiveUsers.AsEnumerable().Where(x => SOAGeneratedUCC.Contains(x.Field<string>("UCCCODE"))).CopyToDataTable();
+                dtActiveUsers.AsEnumerable().Where(s => Convert.ToString(s["SOA_Generated"].ToString().Trim()) == "").ToList().ForEach(D => D.SetField("SOA_Generated", "NO"));
+
+                foreach (DataRow item in dtActiveUsers_New.Rows)
+                {
+                    string data = item["UCCCODE"].ToString();
+                    dtActiveUsers.AsEnumerable().Where(s => Convert.ToString(s["UCCCODE"]).Equals(item["UCCCODE"])).ToList().ForEach(D => D.SetField("SOA_Generated", "YES"));
+                }
+
+                // Remove and Add  Columns for final data save and file export
+                dtActiveUsers.Columns.Remove("PAN");
+                dtActiveUsers.Columns.Remove("AUMDate");
+                dtActiveUsers.Columns.Remove("AUM");
+                dtActiveUsers.Columns.Remove("Units");
+                dtActiveUsers.Columns.Remove("Nav");
+                dtActiveUsers.Columns.Remove("CategoryTypeId");
+                dtActiveUsers.Columns.Remove("ProductId");
+                dtActiveUsers.Columns.Remove("SeriesId");
+                dtActiveUsers.Columns.Remove("ClientId");
+                dtActiveUsers.Columns.Remove("Id");
+
+                dtActiveUsers.Columns.Add("PID", typeof(string)).SetOrdinal(0);
+                dtActiveUsers.Columns.Add("SALUTATION", typeof(string)).SetOrdinal(1);
+                dtActiveUsers.Columns.Add("USERID", typeof(string)).SetOrdinal(2);
+
+                dtActiveUsers.Columns["ClientName"].ColumnName = "NAME";
+                dtActiveUsers.Columns.Add("ADVISOR", typeof(string)).SetOrdinal(4);
+                dtActiveUsers.Columns["ClientEmailId"].ColumnName = "TO";
+
+
+                dtActiveUsers.Columns.Add("CC", typeof(string)).SetOrdinal(6);
+                dtActiveUsers.Columns.Add("PORTFOLIO RETURN", typeof(string)).SetOrdinal(7);
+                dtActiveUsers.Columns.Add("PRODUCT", typeof(string)).SetOrdinal(8);
+                dtActiveUsers.Columns.Add("FOLIO NO.", typeof(string)).SetOrdinal(10);
+                dtActiveUsers.Columns.Add("CLASS", typeof(string)).SetOrdinal(11);
+
+                System.Data.DataColumn newColumn = new System.Data.DataColumn("SOA_DATE", typeof(System.DateTime));
+                newColumn.DefaultValue = objSPSOAModel.SOADate;
+                dtActiveUsers.Columns.Add(newColumn);
+
+                // Upload Data in DB
+                string _strSqlConn = System.Configuration.ConfigurationManager.ConnectionStrings["SPSOAConnectionString"].ConnectionString;
+                BulkUploadData(_strSqlConn, dtActiveUsers, "SPSOA_LOGS");
+
+                dtActiveUsers.Columns.Remove("SOA_DATE");
+
+                DataSet objDs = new DataSet();
+                objDs.Merge(dtActiveUsers);
+
+                // Create Excel file
+                string FilePath = CreateSPSOAExcelForExportData(SPS_ECSL_DATE, objDs, "ExcelData");
+
+                // Generate Email
+                ConfigureEmailForSPSOAMailer("TemplateForSPSOA", "TemplateForSPSOA", FilePath, objSPSOAModel.SOADate);
+
+                // Save SP SOA generated details
+                DataSet ds = GetDataSet("[dbo].[INSERT_SPSOAGENERATION_LOGS]", new { objSPSOAModel.SOADate, FilePath, Factory.UserState.UserId, Factory.UserState.RoleId }, false, _strSqlConn);
+
+                Result.Error = 0;
+                Result.ErrorMsg = "";
+                Result.Value = FilePath;
+                return Result;
+            }
+            catch (Exception ex)
+            {
+                Result.Error = 1;
+                Result.ErrorMsg = ex.Message;
+                Result.Value = "";
+                return Result;
+            }
+        }
+
+        private ObjResult<string> CompareAndMergePdfs(string SPS_ECSL_DATE, DataTable dtActiveUsers, ref List<string> SOAGeneratedUCC)
+        {
+            ObjResult<string> objResult = new ObjResult<string>();
+            try
+            {
+                var SPSOAPath = System.Configuration.ConfigurationManager.AppSettings["SPSOA_BasePath"];
+                var SPSOAFolderName = System.Configuration.ConfigurationManager.AppSettings["SPSOA_FolderName"];
+                var Final_SP_SOA_Path = System.Configuration.ConfigurationManager.AppSettings["SPSOA_FinalMergedPdfPath"];
+                Final_SP_SOA_Path = Final_SP_SOA_Path.Replace("{SPSOA_FolderName}", SPSOAFolderName);
+                Final_SP_SOA_Path = Final_SP_SOA_Path + "\\" + SPS_ECSL_DATE + "\\";
+
+                if (!Directory.Exists(Final_SP_SOA_Path))
+                    Directory.CreateDirectory(Final_SP_SOA_Path);
+
+                // Create Merged directory
+                if (!Directory.Exists(Final_SP_SOA_Path + "\\" + "Merged"))
+                    Directory.CreateDirectory(Final_SP_SOA_Path + "\\" + "Merged");
+
+                // Create Unmerged directory
+                if (!Directory.Exists(Final_SP_SOA_Path + "\\" + "Unmerged"))
+                    Directory.CreateDirectory(Final_SP_SOA_Path + "\\" + "Unmerged");
+
+                string Original_SPSOA_Path = SPSOAPath + "\\" + SPS_ECSL_DATE + "\\SPS without password\\";
+
+                var PdfFilePath = System.Configuration.ConfigurationManager.AppSettings["SPSOA_PdfFilePath"];
+                PdfFilePath = PdfFilePath.Replace("{SPSOA_FolderName}", SPSOAFolderName);
+
+                var GeneratedSPSOAPath = PdfFilePath + "\\" + SPS_ECSL_DATE + "\\";
+
+                var lstActiveClients = dtActiveUsers.AsEnumerable().Select(a => new { UCCCODE = a.Field<string>("UCCCODE") }).ToList();
+
+                string[] lstGeneratedSPSOAFiles = Directory.GetFiles(GeneratedSPSOAPath);
+                var GeneratedSPSOAFiles = lstGeneratedSPSOAFiles.Select(x => new { FileName = x.Replace(GeneratedSPSOAPath, "").Replace(".pdf", "") });
+
+
+                string[] lstOriginal_SPSOAFiles = Directory.GetFiles(Original_SPSOA_Path);
+                var Original_SPSOAFiles = lstOriginal_SPSOAFiles.Select(x => new { FileName = x.Replace(Original_SPSOA_Path + "Portfolio Snap Report_", "").Replace(".pdf", "") });
+
+                foreach (var item in Original_SPSOAFiles)
+                {
+                    // Merge WS Originial PDF and generated pdf,if Client Active & file exists in Generated pdf
+                    if ((GeneratedSPSOAFiles.Any(x => x.FileName == item.FileName)) && (lstActiveClients.Any(b => b.UCCCODE == item.FileName)))
+                    {
+                        string Original_File = Array.Find(lstOriginal_SPSOAFiles, element => element.Contains(item.FileName));
+                        string New_File = Array.Find(lstGeneratedSPSOAFiles, element => element.Contains(item.FileName));
+
+                        bool mergeResult = MergePDFs(new List<string>() { Original_File, New_File }, Final_SP_SOA_Path + "\\Merged\\" + "Portfolio Snap Report_" + item.FileName + ".pdf");
+
+                        if (mergeResult)
+                        {
+                            SOAGeneratedUCC.Add(item.FileName);
+                            // Delete file from unmerged folder if exists
+                            DeletefileFromUnmerged(Final_SP_SOA_Path + "\\Unmerged\\" + "Portfolio Snap Report_" + item.FileName + ".pdf");
+                        }
+                    }
+                    else
+                    {
+                        // Copy WS Originial PDF if Client Active
+                        if (lstActiveClients.Any(b => b.UCCCODE == item.FileName))
+                        {
+                            string Original_File = Array.Find(lstOriginal_SPSOAFiles, element => element.Contains(item.FileName));
+                            bool mergeResult = MergePDFs(new List<string>() { Original_File }, Final_SP_SOA_Path + "\\Unmerged\\" + "Portfolio Snap Report_" + item.FileName + ".pdf");
+                        }
+                    }
+
+                    //------------------------ Add Password to files -----------------------------
+                    //if(mergeResult)
+                    //{
+
+                    //    DataRow dr = dtActiveUsers.AsEnumerable().Where(a => a.Field<string>("UCCCODE") == item.FileName).FirstOrDefault();
+
+                    //    using (PdfReader reader = new PdfReader(@"D:\HTML_TO_PDF\MergedPdf\" + item.FileName + "1.pdf"))
+                    //    {
+                    //        PdfEncryptor.Encrypt(reader, new FileStream(@"D:\HTML_TO_PDF\MergedPdf\" + item.FileName + ".pdf", FileMode.Create), PdfWriter.STRENGTH128BITS, Convert.ToString(dr["PAN"]), null, PdfWriter.AllowPrinting);
+                    //        reader.Close();
+                    //    }
+
+                    //    File.Delete(@"D:\HTML_TO_PDF\MergedPdf\" + item.FileName + "1.pdf");
+                    //}
+
+
+                }
+
+                objResult.Error = 0;
+                objResult.ErrorMsg = "";
+                objResult.Value = "";
+
+                return objResult;
+            }
+            catch (Exception ex)
+            {
+                objResult.Error = 1;
+                objResult.ErrorMsg = "Error occured while merging files. " + ex.Message;
+                objResult.Value = "";
+
+                return objResult;
+            }
+        }
+
+        public bool MergePDFs(IEnumerable<string> fileNames, string targetPdf)
+        {
+            bool merged = true;
+            using (FileStream stream = new FileStream(targetPdf, FileMode.Create))
+            {
+                Document document = new Document();
+                PdfCopy pdf = new PdfCopy(document, stream);
+                PdfReader reader = null;
+                try
+                {
+                    document.Open();
+                    foreach (string file in fileNames)
+                    {
+                        reader = new PdfReader(file);
+                        pdf.AddDocument(reader);
+                        reader.Close();
+                    }
+
+
+                }
+                catch (Exception)
+                {
+                    merged = false;
+                    if (reader != null)
+                    {
+                        reader.Close();
+                    }
+                }
+                finally
+                {
+                    if (document != null)
+                    {
+                        document.Close();
+                    }
+                }
+            }
+            return merged;
+        }
+
+        private void DeletefileFromUnmerged(string fileName)
+        {
+            try
+            {
+                if (File.Exists(fileName))
+                    File.Delete(fileName);
+            }
+            catch (Exception ex)
+            {
+
+            }
+        }
+
+        public DataTable GetSPProductsList()
+        {
+            var ExcelFilePath = System.Configuration.ConfigurationManager.AppSettings["MSFFileBasePath"];
+
+            DataTable dtExcelData = new DataTable();
+
+            var FileExistsDate = DateTime.Now;
+            string strPhyFilePath = ExcelFilePath + "\\" + "SP Product Master_MSF_" + FileExistsDate.ToString("dd-MMM-yy") + ".xls";
+
+            while (!File.Exists(strPhyFilePath))
+            {
+                FileExistsDate = FileExistsDate.AddDays(-1);
+                strPhyFilePath = ExcelFilePath + "\\" + "SP Product Master_MSF_" + FileExistsDate.ToString("dd-MMM-yy") + ".xls";
+            }
+
+            string HTML = string.Empty;
+
+            using (FileStream stream = File.Open(strPhyFilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            {
+                using (StreamReader reader = new StreamReader(stream))
+                {
+                    HTML = reader.ReadToEnd();
+                }
+            }
+
+            //var HTML = File.ReadAllText(strPhyFilePath);
+
+            HTML = HTML.Replace("<b>", "").Replace("</b>", "");
+
+            DataTable dt = null;
+            DataRow dr = null;
+            DataColumn dc = null;
+            string TableExpression = "<table[^>]*>(.*?)</table>";
+            string HeaderExpression = "<th[^>]*>(.*?)</th>";
+            string RowExpression = "<tr[^>]*>(.*?)</tr>";
+            string ColumnExpression = "<td[^>]*>(.*?)</td>";
+            bool HeadersExist = false;
+            int iCurrentColumn = 0;
+            int iCurrentRow = 0;
+
+            // Get a match for all the tables in the HTML    
+            MatchCollection Tables = Regex.Matches(HTML, TableExpression, RegexOptions.Multiline | RegexOptions.Singleline | RegexOptions.IgnoreCase);
+
+            // Loop through each table element    
+            foreach (Match Table in Tables)
+            {
+
+                // Reset the current row counter and the header flag    
+                iCurrentRow = 0;
+                HeadersExist = false;
+
+                // Add a new table to the DataSet    
+                dt = new DataTable();
+
+                //// Create the relevant amount of columns for this table (use the headers if they exist, otherwise use default names)    
+                //if (Table.Value.Contains("<th"))
+                //{
+                //    // Set the HeadersExist flag    
+                //    HeadersExist = true;
+
+                //    // Get a match for all the rows in the table    
+                //    MatchCollection Headers = Regex.Matches(Table.Value, HeaderExpression, RegexOptions.Multiline | RegexOptions.Singleline | RegexOptions.IgnoreCase);
+
+                //    // Loop through each header element    
+                //    foreach (Match Header in Headers)
+                //    {
+                //        //dt.Columns.Add(Header.Groups(1).ToString);  
+                //        dt.Columns.Add(Header.Groups[1].ToString());
+
+                //    }
+                //}
+                //else
+                //{
+                //    for (int iColumns = 1; iColumns <= Regex.Matches(Regex.Matches(Regex.Matches(Table.Value, TableExpression, RegexOptions.Multiline | RegexOptions.Singleline | RegexOptions.IgnoreCase)[0].ToString(), RowExpression, RegexOptions.Multiline | RegexOptions.Singleline | RegexOptions.IgnoreCase)[0].ToString(), ColumnExpression, RegexOptions.Multiline | RegexOptions.Singleline | RegexOptions.IgnoreCase).Count; iColumns++)
+                //    {
+                //        dt.Columns.Add("Column " + iColumns);
+                //    }
+                //}
+
+                // Get a match for all the rows in the table    
+                MatchCollection Rows = Regex.Matches(Table.Value, RowExpression, RegexOptions.Multiline | RegexOptions.Singleline | RegexOptions.IgnoreCase);
+
+
+                // Loop through each row element    
+                foreach (Match Row in Rows)
+                {
+
+                    // Only loop through the row if it isn't a header row    
+                    if (!(iCurrentRow == 0 & HeadersExist == true))
+                    {
+
+                        // Create a new row and reset the current column counter    
+                        dr = dt.NewRow();
+                        iCurrentColumn = 0;
+
+                        // Get a match for all the columns in the row    
+                        MatchCollection Columns = Regex.Matches(Row.Value, ColumnExpression, RegexOptions.Multiline | RegexOptions.Singleline | RegexOptions.IgnoreCase);
+
+                        // Loop through each column element    
+                        foreach (Match Column in Columns)
+                        {
+
+                            DataColumnCollection columns = dt.Columns;
+
+                            if (iCurrentRow == 0)
+                            {
+                                if (!columns.Contains("Column " + iCurrentColumn))
+                                {
+                                    //Add Columns  
+                                    dt.Columns.Add(Column.Groups[1].ToString());
+                                }
+                            }
+                            else
+                            {
+                                // Add the value to the DataRow    
+                                dr[iCurrentColumn] = Column.Groups[1].ToString();
+                            }
+                            // Increase the current column    
+                            iCurrentColumn += 1;
+                        }
+
+                        // Add the DataRow to the DataTable    
+                        if (iCurrentRow != 0)
+                            dt.Rows.Add(dr);
+
+                    }
+
+                    // Increase the current row counter    
+                    iCurrentRow += 1;
+                }
+            }
+
+            dtExcelData = dt;
+
+            return dtExcelData;
+        }
+
+        private DataTable GetActiveClientFromGenie()
+        {
+            DataTable dtResult = new DataTable();
+            try
+            {
+                //var Store = GetStore();
+                //dtResult = Store.GetDataTable("[dbo].[GetActiveClientFromGenie]", null, false);
+
+                string _strSqlConn = System.Configuration.ConfigurationManager.ConnectionStrings["SPSOAConnectionString"].ConnectionString;
+                DataSet ds = GetDataSet("[dbo].[GetActiveClientFromGenie]", null, false, _strSqlConn);
+                if (ds != null && ds.Tables.Count > 0)
+                {
+                    dtResult = ds.Tables[0];
+                }
+
+                return dtResult;
+            }
+            catch (Exception ex)
+            {
+                return dtResult;
+            }
+        }
+
+        private List<PMS_WS_Client> GetClientDetails()
+        {
+            string TokenId = GetToken();
+            List<PMS_WS_Client> obj = new List<PMS_WS_Client>();
+
+            if (!string.IsNullOrWhiteSpace(TokenId))
+            {
+                try
+                {
+                    using (WebClient objWebClient = new System.Net.WebClient())
+                    {
+                        var BaseAddress = System.Configuration.ConfigurationManager.AppSettings["WSApiBaseAddress"];
+                        var UserName = System.Configuration.ConfigurationManager.AppSettings["WSApiUserName"];
+                        var LoginType = System.Configuration.ConfigurationManager.AppSettings["WSApiLoginType"];
+
+                        objWebClient.BaseAddress = BaseAddress;
+                        objWebClient.Headers.Add("UserName", UserName);
+                        objWebClient.Headers.Add("LoginType", LoginType);
+                        objWebClient.Headers.Add("TokenId", TokenId);
+
+                        var reqparm = new System.Collections.Specialized.NameValueCollection();
+
+                        var FromDate = DateTime.Now.AddDays(-1).ToString("dd-MMM-yyyy");
+                        var ToDate = DateTime.Now.AddDays(-1).ToString("dd-MMM-yyyy");
+
+                        reqparm.Add("FromDate", FromDate);
+                        reqparm.Add("Todate", ToDate);
+
+                        byte[] resultTokenApi = objWebClient.UploadValues("PMS_TRANSACTION_AUM/GetPMSTransactionAUMReport", "POST", reqparm);
+                        string responce = Encoding.UTF8.GetString(resultTokenApi);
+
+                        obj = Newtonsoft.Json.JsonConvert.DeserializeObject<List<PMS_WS_Client>>(responce);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // TO DO :  Log Exception
+                }
+            }
+
+            return obj;
+        }
+
+        private string GetToken()
+        {
+            string Token_Id = string.Empty;
+            try
+            {
+                using (WebClient objWebClient = new WebClient())
+                {
+                    var BaseAddress = System.Configuration.ConfigurationManager.AppSettings["WSApiBaseAddress"];
+                    var UserName = System.Configuration.ConfigurationManager.AppSettings["WSApiUserName"];
+                    var LoginType = System.Configuration.ConfigurationManager.AppSettings["WSApiLoginType"];
+
+                    objWebClient.BaseAddress = BaseAddress;
+                    objWebClient.Headers.Add("UserName", UserName);
+                    objWebClient.Headers.Add("LoginType", LoginType);
+                    objWebClient.Headers.Add("Accept", "application/json");
+
+                    var reqparm = new System.Collections.Specialized.NameValueCollection();
+
+                    byte[] resultTokenApi = objWebClient.UploadValues("Service/GetTokenID", "POST", reqparm);
+                    string responce = Encoding.UTF8.GetString(resultTokenApi);
+
+
+                    var rootElement = System.Xml.Linq.XElement.Parse(responce);
+                    Token_Id = rootElement.Value;
+
+                    return Token_Id;
+                }
+            }
+            catch (Exception ex)
+            {
+                return Token_Id;
+            }
+        }
+
+        private string GetHTML(DataRow drSPProduct, PMS_WS_Client WSclient)
+        {
+            StringBuilder sb = new StringBuilder();
+
+            int entryCount = 0;
+            decimal entryTotalAmt = 0;
+            int exitCount = 0;
+            decimal exitTotalAmt = 0;
+
+            var LogoFilePath = System.Configuration.ConfigurationManager.AppSettings["LogoFilePath"];
+
+            #region HTML
+
+            sb.Append("<html>");
+            sb.Append("<body>");
+            sb.Append("<table>");
+            sb.Append("<tr>");
+            sb.Append("<td width='25%'><img src='" + LogoFilePath + "' width='100%' ></td>");
+            sb.Append("<td width='75%'> <p style='font-family: Times New Roman;font-size: 8pt;'>EDELWEISS ASSET MANAGEMENT LIMITED</p>");
+            sb.Append("<p style='font-family: Times New Roman;font-size: 8pt;'>EDELWEISS HOUSE, OFF CST ROAD, KALINA, MUMBAI</p>");
+            sb.Append("<p style='font-family: Times New Roman;font-size: 8pt;'>MAHARASTRA</p></td>");
+            sb.Append("</tr>");
+            sb.Append("</table>");
+            sb.Append("<br>");
+
+            sb.Append("<div style='font-family: Times New Roman;font-size: 10pt;font-weight: bold;text-align: center;' >STATEMENT OF INVESTMENT</div>");
+            sb.Append("<div style='font-family: Times New Roman;font-size: 8pt;text-align: center;'>As on " + DateTime.Now.ToString("dd-MMM-yyyy") + "</div>");
+            sb.Append("<div style='font-family: Times New Roman;font-size: 8pt;text-align: center;'>Account : " + WSclient.ACCOUNTID + "&nbsp;&nbsp;&nbsp;&nbsp;" + WSclient.CLIENTNAME.ToUpper() + "&nbsp;&nbsp;&nbsp;&nbsp;  -&nbsp;" + WSclient.UCCCODE + "</div>");
+
+            sb.Append("<br>");
+
+            sb.Append("<table border='1' bordercolor='#9C9C9C' width='100%' style='border-collapse: collapse;font-family: Times New Roman;font-size: 8pt;color: #222222;background: #ffffff;line-height:normal;'>");
+            sb.Append("<tr bgcolor='#dae8ff'>");
+
+            sb.Append("<td colspan='2'>");
+            sb.Append("<table border='0' style='width: 100%;'><tr>");
+            sb.Append("<td width='30%' style='padding: 0px ;' align='left' valgin='middle'><strong>Investment Details - </strong></td>");
+            sb.Append("<td width='70%' style='padding: 0px;' valgin='middle'><center><strong>" + WSclient.SERIESNAME + "</strong></center></td>");
+            sb.Append("</tr></table>");
+            sb.Append("</td>");
+
+
+            sb.Append("</tr>");
+            sb.Append("<tr>");
+            sb.Append("<td style='padding: 0px ;' valgin='middle'><strong>Product Name</strong></td>");
+            sb.Append("<td style='padding: 8px ;' valgin='middle'>" + (string.IsNullOrWhiteSpace(Convert.ToString(drSPProduct["Product Name"])) ? "-" : Convert.ToString(drSPProduct["Product Name"])) + "</td>");
+            sb.Append("</tr>");
+            sb.Append("<tr>");
+            sb.Append("<td style='padding: 0px ;'><strong>Product Code</strong></td></td>");
+            sb.Append("<td style='padding: 0px ;'>" + WSclient.SERIESCODE + "</td>");
+            sb.Append("</tr>");
+            sb.Append("<tr>");
+            sb.Append("<td style='padding: 0px ;'><strong>#Units Allotted</strong></td>");
+            sb.Append("<td style='padding: 8px ;'>" + Convert.ToString(Math.Round(Convert.ToDecimal(WSclient.UNITS), 0)) + "</td>");
+            sb.Append("</tr>");
+            sb.Append("<tr>");
+            sb.Append("<td style='padding: 0px ;'><strong>Investment Amount</strong></td>");
+            sb.Append("<td style='padding: 0px ;'>Rs. " + (Math.Round(Convert.ToDecimal(WSclient.COST_VALUE), 2)).ToString("N", new CultureInfo("en-US")) + "</td>");
+            sb.Append("</tr>");
+            sb.Append("<tr>");
+            sb.Append("<td style='padding: 0px ;'><strong>Valuation Amount</strong></td>");
+            sb.Append("<td style='padding: 0px ;'>Rs. " + (Math.Round(Convert.ToDecimal(WSclient.MARKET_VALUE), 2)).ToString("N", new CultureInfo("en-US")) + "</td>");
+            sb.Append("</tr>");
+            sb.Append("<tr>");
+            sb.Append("<td style='padding: 0px ;'><strong>Face Value</strong></td>");
+            sb.Append("<td style='padding: 0px ;'>" + (string.IsNullOrEmpty(Convert.ToString(drSPProduct["Face Value per Unit"])) ? "-" : Convert.ToString(drSPProduct["Face Value per Unit"])) + "</td>");
+            sb.Append("</tr>");
+            sb.Append("</table>");
+            sb.Append("<br>");
+
+            sb.Append("<table border='1' bordercolor='#9C9C9C' width='100%' style='border-collapse: collapse;font-family: Times New Roman;font-size: 8pt;color: #222222;background: #ffffff;line-height:normal;'>");
+            sb.Append("<tr bgcolor='#dae8ff'>");
+            sb.Append("<td style='padding: 8px;' colspan='2' align='left'><strong>Investment Strategy Details</strong></td>");
+            sb.Append("</tr>");
+            if (!string.IsNullOrEmpty(drSPProduct["PP/Non PP"].ToString()) && Convert.ToString(drSPProduct["PP/Non PP"]).ToLower() == "yes")
+            {
+                sb.Append("<tr>");
+                sb.Append("<td style='padding: 8px;'><strong>Principal Protection<sup>1</sup></strong></td>");
+                sb.Append("<td style='padding: 8px;'>Prinicipal is protected at maturity</td>");
+                sb.Append("</tr>");
+            }
+            sb.Append("<tr>");
+            sb.Append("<td style='padding: 8px;'><strong>Underlying</strong></td>");
+            sb.Append("<td style='padding: 8px;'>" + (string.IsNullOrWhiteSpace(Convert.ToString(drSPProduct["Underlying"])) ? "-" : Convert.ToString(drSPProduct["Underlying"])) + "</td>");
+            sb.Append("</tr>");
+
+            if ((Convert.ToString(drSPProduct["EntryLevelDate1"]) != "-" && Convert.ToString(drSPProduct["EntryLevelDate1"]) != "") ||
+                (Convert.ToString(drSPProduct["EntryLevelDate2"]) != "-" && Convert.ToString(drSPProduct["EntryLevelDate2"]) != "") ||
+                (Convert.ToString(drSPProduct["EntryLevelDate3"]) != "-" && Convert.ToString(drSPProduct["EntryLevelDate3"]) != "") ||
+                (Convert.ToString(drSPProduct["EntryLevelDate4"]) != "-" && Convert.ToString(drSPProduct["EntryLevelDate4"]) != "") ||
+                (Convert.ToString(drSPProduct["EntryLevelDate5"]) != "-" && Convert.ToString(drSPProduct["EntryLevelDate5"]) != ""))
+            {
+                sb.Append("<tr>");
+                sb.Append("<td style='padding: 8px;'><strong>Entry Level" +
+                   ((!string.IsNullOrWhiteSpace(Convert.ToString(drSPProduct["Underlying"])) && !string.IsNullOrEmpty(Convert.ToString(drSPProduct["Underlying"])) && (Convert.ToString(drSPProduct["Underlying"]).ToUpper()).Contains("HDFC BANK")) ? "<sup>4</sup>" : "") + "</strong></td>");
+                sb.Append("<td style='padding: 8px;'>");
+                sb.Append("Average of closing level of Underlying as on:<br>");
+                sb.Append("<table border='1' bordercolor='#9C9C9C' width='100%' style='border-collapse: collapse;font-family: Times New Roman;font-size: 8pt;color: #222222;background: #ffffff;'>");
+                sb.Append("<tr>");
+                sb.Append("<td style='padding: 8px;'><strong>Date</strong></td>");
+                sb.Append("<td style='padding: 8px;'><strong>Level</strong></td>");
+                sb.Append("</tr>");
+                if (Convert.ToString(drSPProduct["EntryLevelDate1"]) != "-" && Convert.ToString(drSPProduct["EntryLevelDate1"]) != "")
+                {
+                    if (Convert.ToString(drSPProduct["EntryLevelLevel1"]) != "-" && Convert.ToString(drSPProduct["EntryLevelLevel1"]) != "")
+                        entryCount = entryCount + 1;
+                    entryTotalAmt = entryTotalAmt + GetDecimalNUmber(drSPProduct["EntryLevelLevel1"].ToString());
+
+                    sb.Append("<tr>");
+                    sb.Append("<td style='padding: 8px;'><strong>" + (string.IsNullOrEmpty(Convert.ToString(drSPProduct["EntryLevelDate1"])) ? "-" : ((Convert.ToString(drSPProduct["EntryLevelDate1"]).Length > 9) ? (Convert.ToString(drSPProduct["EntryLevelDate1"])).Substring(0, 9) : (Convert.ToString(drSPProduct["EntryLevelDate1"])))) + "</strong></td>");
+                    sb.Append("<td style='padding: 8px;'>" + (string.IsNullOrEmpty(Convert.ToString(drSPProduct["EntryLevelLevel1"])) ? "-" : Convert.ToString(drSPProduct["EntryLevelLevel1"])) + "</td>");
+                    sb.Append("</tr>");
+                }
+                if (Convert.ToString(drSPProduct["EntryLevelDate2"]) != "-" && Convert.ToString(drSPProduct["EntryLevelDate2"]) != "")
+                {
+                    if (Convert.ToString(drSPProduct["EntryLevelLevel2"]) != "-" && Convert.ToString(drSPProduct["EntryLevelLevel2"]) != "")
+                        entryCount = entryCount + 1;
+                    entryTotalAmt = entryTotalAmt + GetDecimalNUmber(drSPProduct["EntryLevelLevel2"].ToString());
+
+                    sb.Append("<tr>");
+                    sb.Append("<td style='padding: 8px;'><strong>" + (string.IsNullOrEmpty(Convert.ToString(drSPProduct["EntryLevelDate2"])) ? "-" : ((Convert.ToString(drSPProduct["EntryLevelDate2"]).Length > 9) ? (Convert.ToString(drSPProduct["EntryLevelDate2"])).Substring(0, 9) : (Convert.ToString(drSPProduct["EntryLevelDate2"])))) + "</strong></td>");
+                    sb.Append("<td style='padding: 8px;'>" + (string.IsNullOrEmpty(Convert.ToString(drSPProduct["EntryLevelLevel2"])) ? "-" : Convert.ToString(drSPProduct["EntryLevelLevel2"])) + "</td>");
+                    sb.Append("</tr>");
+                }
+                if (Convert.ToString(drSPProduct["EntryLevelDate3"]) != "-" && Convert.ToString(drSPProduct["EntryLevelDate3"]) != "")
+                {
+                    if (Convert.ToString(drSPProduct["EntryLevelLevel3"]) != "-" && Convert.ToString(drSPProduct["EntryLevelLevel3"]) != "")
+                        entryCount = entryCount + 1;
+                    entryTotalAmt = entryTotalAmt + GetDecimalNUmber(drSPProduct["EntryLevelLevel3"].ToString());
+
+                    sb.Append("<tr>");
+                    sb.Append("<td style='padding: 8px;'><strong>" + (string.IsNullOrEmpty(Convert.ToString(drSPProduct["EntryLevelDate3"])) ? "-" : ((Convert.ToString(drSPProduct["EntryLevelDate3"]).Length > 9) ? (Convert.ToString(drSPProduct["EntryLevelDate3"])).Substring(0, 9) : (Convert.ToString(drSPProduct["EntryLevelDate3"])))) + "</strong></td>");
+                    sb.Append("<td style='padding: 8px;'>" + (string.IsNullOrEmpty(Convert.ToString(drSPProduct["EntryLevelLevel3"])) ? "-" : Convert.ToString(drSPProduct["EntryLevelLevel3"])) + "</td>");
+                    sb.Append("</tr>");
+                }
+                if (Convert.ToString(drSPProduct["EntryLevelDate4"]) != "-" && Convert.ToString(drSPProduct["EntryLevelDate4"]) != "")
+                {
+                    if (Convert.ToString(drSPProduct["EntryLevelLevel4"]) != "-" && Convert.ToString(drSPProduct["EntryLevelLevel4"]) != "")
+                        entryCount = entryCount + 1;
+                    entryTotalAmt = entryTotalAmt + GetDecimalNUmber(drSPProduct["EntryLevelLevel4"].ToString());
+
+                    sb.Append("<tr>");
+                    sb.Append("<td style='padding: 8px;'><strong>" + (string.IsNullOrEmpty(Convert.ToString(drSPProduct["EntryLevelDate4"])) ? "-" : ((Convert.ToString(drSPProduct["EntryLevelDate4"]).Length > 9) ? (Convert.ToString(drSPProduct["EntryLevelDate4"])).Substring(0, 9) : (Convert.ToString(drSPProduct["EntryLevelDate4"])))) + "</strong></td>");
+                    sb.Append("<td style='padding: 8px;'>" + (string.IsNullOrEmpty(Convert.ToString(drSPProduct["EntryLevelLevel4"])) ? "-" : Convert.ToString(drSPProduct["EntryLevelLevel4"])) + "</td>");
+                    sb.Append("</tr>");
+                }
+                if (Convert.ToString(drSPProduct["EntryLevelDate5"]) != "-" && Convert.ToString(drSPProduct["EntryLevelDate5"]) != "")
+                {
+                    if (Convert.ToString(drSPProduct["EntryLevelLevel5"]) != "-" && Convert.ToString(drSPProduct["EntryLevelLevel5"]) != "")
+                        entryCount = entryCount + 1;
+                    entryTotalAmt = entryTotalAmt + GetDecimalNUmber(drSPProduct["EntryLevelLevel5"].ToString());
+
+                    sb.Append("<tr>");
+                    sb.Append("<td style='padding: 8px;'><strong>" + (string.IsNullOrEmpty(Convert.ToString(drSPProduct["EntryLevelDate5"])) ? "-" : ((Convert.ToString(drSPProduct["EntryLevelDate5"]).Length > 9) ? (Convert.ToString(drSPProduct["EntryLevelDate5"])).Substring(0, 9) : (Convert.ToString(drSPProduct["EntryLevelDate5"])))) + "</strong></td>");
+                    sb.Append("<td style='padding: 8px;'>" + (string.IsNullOrEmpty(Convert.ToString(drSPProduct["EntryLevelLevel5"])) ? "-" : Convert.ToString(drSPProduct["EntryLevelLevel5"])) + "</td>");
+                    sb.Append("</tr>");
+                }
+                if (Convert.ToString(drSPProduct["EntryLevelDate6"]) != "-" && Convert.ToString(drSPProduct["EntryLevelDate6"]) != "")
+                {
+                    if (Convert.ToString(drSPProduct["EntryLevelLevel6"]) != "-" && Convert.ToString(drSPProduct["EntryLevelLevel6"]) != "")
+                        entryCount = entryCount + 1;
+                    entryTotalAmt = entryTotalAmt + GetDecimalNUmber(drSPProduct["EntryLevelLevel6"].ToString());
+
+                    sb.Append("<tr>");
+                    sb.Append("<td style='padding: 8px;'><strong>" + (string.IsNullOrEmpty(Convert.ToString(drSPProduct["EntryLevelDate6"])) ? "-" : ((Convert.ToString(drSPProduct["EntryLevelDate6"]).Length > 9) ? (Convert.ToString(drSPProduct["EntryLevelDate6"])).Substring(0, 9) : (Convert.ToString(drSPProduct["EntryLevelDate6"])))) + "</strong></td>");
+                    sb.Append("<td style='padding: 8px;'>" + (string.IsNullOrEmpty(Convert.ToString(drSPProduct["EntryLevelLevel6"])) ? "-" : Convert.ToString(drSPProduct["EntryLevelLevel6"])) + "</td>");
+                    sb.Append("</tr>");
+                }
+                if (entryCount > 0)
+                {
+                    var EntryAvg = Convert.ToString(Math.Round((entryTotalAmt / entryCount), 2));
+
+                    sb.Append("<tr>");
+                    sb.Append("<td style='padding: 8px;'>Entry Level Avg</td>");
+                    sb.Append("<td style='padding: 8px;'>" + EntryAvg + "</td>");
+                    sb.Append("</tr>");
+                }
+                sb.Append("</table>");
+                sb.Append("</td>");
+                sb.Append("</tr>");
+
+            }
+
+            if ((Convert.ToString(drSPProduct["ExitLevelDate1"]) != "-" && Convert.ToString(drSPProduct["ExitLevelDate1"]) != "") ||
+                (Convert.ToString(drSPProduct["ExitLevelDate2"]) != "-" && Convert.ToString(drSPProduct["ExitLevelDate1"]) != "") ||
+                (Convert.ToString(drSPProduct["ExitLevelDate3"]) != "-" && Convert.ToString(drSPProduct["ExitLevelDate1"]) != "") ||
+                (Convert.ToString(drSPProduct["ExitLevelDate4"]) != "-" && Convert.ToString(drSPProduct["ExitLevelDate1"]) != "") ||
+                (Convert.ToString(drSPProduct["ExitLevelDate5"]) != "-" && Convert.ToString(drSPProduct["ExitLevelDate1"]) != "") ||
+                (Convert.ToString(drSPProduct["ExitLevelDate6"]) != "-" && Convert.ToString(drSPProduct["ExitLevelDate1"]) != ""))
+            {
+
+                sb.Append("<tr>");
+                sb.Append("<td style='padding: 8px;'><strong>Exit Level</strong></td>");
+                sb.Append("<td style='padding: 8px;'>");
+                sb.Append("Average of closing level of Underlying as on:<br>");
+                sb.Append("<table border='1' bordercolor='#9C9C9C' width='100%' style='border-collapse: collapse;font-family: Times New Roman;font-size: 8pt;color: #222222;background: #ffffff;line-height:normal;'>");
+                sb.Append("<tr>");
+                sb.Append("<td style='padding: 8px;'><strong>Date</strong></td>");
+                sb.Append("<td style='padding: 8px;'><strong>Level</strong></td>");
+                sb.Append("</tr>");
+                if (Convert.ToString(drSPProduct["ExitLevelDate1"]) != "-" && Convert.ToString(drSPProduct["ExitLevelDate1"]) != "")
+                {
+                    if (Convert.ToString(drSPProduct["ExitLevelLevel1"]) != "-" && Convert.ToString(drSPProduct["ExitLevelLevel1"]) != "")
+                        exitCount = exitCount + 1;
+                    exitTotalAmt = exitTotalAmt + GetDecimalNUmber(drSPProduct["ExitLevelLevel1"].ToString());
+
+                    sb.Append("<tr>");
+                    sb.Append("<td style='padding: 8px;'><strong>" + (string.IsNullOrEmpty(Convert.ToString(drSPProduct["ExitLevelDate1"])) ? "-" : ((Convert.ToString(drSPProduct["ExitLevelDate1"]).Length > 9) ? (Convert.ToString(drSPProduct["ExitLevelDate1"])).Substring(0, 9) : (Convert.ToString(drSPProduct["ExitLevelDate1"])))) + "</strong></td>");
+                    sb.Append("<td style='padding: 8px;'>" + (string.IsNullOrEmpty(Convert.ToString(drSPProduct["ExitLevelLevel1"])) ? "-" : Convert.ToString(drSPProduct["ExitLevelLevel1"])) + "</td>");
+                    sb.Append("</tr>");
+                }
+                if (Convert.ToString(drSPProduct["ExitLevelDate2"]) != "-" && Convert.ToString(drSPProduct["ExitLevelDate2"]) != "")
+                {
+                    if (Convert.ToString(drSPProduct["ExitLevelLevel2"]) != "-" && Convert.ToString(drSPProduct["ExitLevelLevel2"]) != "")
+                        exitCount = exitCount + 1;
+                    exitTotalAmt = exitTotalAmt + GetDecimalNUmber(drSPProduct["ExitLevelLevel2"].ToString());
+
+                    sb.Append("<tr>");
+                    sb.Append("<td style='padding: 8px;'><strong>" + (string.IsNullOrEmpty(Convert.ToString(drSPProduct["ExitLevelDate2"])) ? "-" : ((Convert.ToString(drSPProduct["ExitLevelDate2"]).Length > 9) ? (Convert.ToString(drSPProduct["ExitLevelDate2"])).Substring(0, 9) : (Convert.ToString(drSPProduct["ExitLevelDate2"])))) + "</strong></td>");
+                    sb.Append("<td style='padding: 8px;'>" + (string.IsNullOrEmpty(Convert.ToString(drSPProduct["ExitLevelLevel2"])) ? "-" : Convert.ToString(drSPProduct["ExitLevelLevel2"])) + "</td>");
+                    sb.Append("</tr>");
+                }
+                if (Convert.ToString(drSPProduct["ExitLevelDate3"]) != "-" && Convert.ToString(drSPProduct["ExitLevelDate3"]) != "")
+                {
+                    if (Convert.ToString(drSPProduct["ExitLevelLevel3"]) != "-" && Convert.ToString(drSPProduct["ExitLevelLevel3"]) != "")
+                        exitCount = exitCount + 1;
+                    exitTotalAmt = exitTotalAmt + GetDecimalNUmber(drSPProduct["ExitLevelLevel3"].ToString());
+
+                    sb.Append("<tr>");
+                    sb.Append("<td style='padding: 8px;'><strong>" + (string.IsNullOrEmpty(Convert.ToString(drSPProduct["ExitLevelDate3"])) ? "-" : ((Convert.ToString(drSPProduct["ExitLevelDate3"]).Length > 9) ? (Convert.ToString(drSPProduct["ExitLevelDate3"])).Substring(0, 9) : (Convert.ToString(drSPProduct["ExitLevelDate3"])))) + "</strong></td>");
+                    sb.Append("<td style='padding: 8px;'>" + (string.IsNullOrEmpty(Convert.ToString(drSPProduct["ExitLevelLevel3"])) ? "-" : Convert.ToString(drSPProduct["ExitLevelLevel3"])) + "</td>");
+                    sb.Append("</tr>");
+                }
+                if (Convert.ToString(drSPProduct["ExitLevelDate4"]) != "-" && Convert.ToString(drSPProduct["ExitLevelDate4"]) != "")
+                {
+                    if (Convert.ToString(drSPProduct["ExitLevelLevel4"]) != "-" && Convert.ToString(drSPProduct["ExitLevelLevel4"]) != "")
+                        exitCount = exitCount + 1;
+                    exitTotalAmt = exitTotalAmt + GetDecimalNUmber(drSPProduct["ExitLevelLevel4"].ToString());
+
+                    sb.Append("<tr>");
+                    sb.Append("<td style='padding: 8px;'><strong>" + (string.IsNullOrEmpty(Convert.ToString(drSPProduct["ExitLevelDate4"])) ? "-" : ((Convert.ToString(drSPProduct["ExitLevelDate4"]).Length > 9) ? (Convert.ToString(drSPProduct["ExitLevelDate4"])).Substring(0, 9) : (Convert.ToString(drSPProduct["ExitLevelDate4"])))) + "</strong></td>");
+                    sb.Append("<td style='padding: 8px;'>" + (string.IsNullOrEmpty(Convert.ToString(drSPProduct["ExitLevelLevel4"])) ? "-" : Convert.ToString(drSPProduct["ExitLevelLevel4"])) + "</td>");
+                    sb.Append("</tr>");
+                }
+                if (Convert.ToString(drSPProduct["ExitLevelDate5"]) != "-" && Convert.ToString(drSPProduct["ExitLevelDate5"]) != "")
+                {
+                    if (Convert.ToString(drSPProduct["ExitLevelLevel5"]) != "-" && Convert.ToString(drSPProduct["ExitLevelLevel5"]) != "")
+                        exitCount = exitCount + 1;
+                    exitTotalAmt = exitTotalAmt + GetDecimalNUmber(drSPProduct["ExitLevelLevel5"].ToString());
+
+                    sb.Append("<tr>");
+                    sb.Append("<td style='padding: 8px;'><strong>" + (string.IsNullOrEmpty(Convert.ToString(drSPProduct["ExitLevelDate5"])) ? "-" : ((Convert.ToString(drSPProduct["ExitLevelDate5"]).Length > 9) ? (Convert.ToString(drSPProduct["ExitLevelDate5"])).Substring(0, 9) : (Convert.ToString(drSPProduct["ExitLevelDate5"])))) + "</strong></td>");
+                    sb.Append("<td style='padding: 8px;'>" + (string.IsNullOrEmpty(Convert.ToString(drSPProduct["ExitLevelLevel5"])) ? "-" : Convert.ToString(drSPProduct["ExitLevelLevel5"])) + "</td>");
+                    sb.Append("</tr>");
+                }
+                if (Convert.ToString(drSPProduct["ExitLevelDate6"]) != "-" && Convert.ToString(drSPProduct["ExitLevelDate6"]) != "")
+                {
+                    if (Convert.ToString(drSPProduct["ExitLevelLevel6"]) != "-" && Convert.ToString(drSPProduct["ExitLevelLevel6"]) != "")
+                        exitCount = exitCount + 1;
+                    exitTotalAmt = exitTotalAmt + GetDecimalNUmber(drSPProduct["ExitLevelLevel6"].ToString());
+
+                    sb.Append("<tr>");
+                    sb.Append("<td style='padding: 8px;'><strong>" + (string.IsNullOrEmpty(Convert.ToString(drSPProduct["ExitLevelDate6"])) ? "-" : ((Convert.ToString(drSPProduct["ExitLevelDate6"]).Length > 9) ? (Convert.ToString(drSPProduct["ExitLevelDate6"])).Substring(0, 9) : (Convert.ToString(drSPProduct["ExitLevelDate6"])))) + "</strong></td>");
+                    sb.Append("<td style='padding: 8px;'>" + (string.IsNullOrEmpty(Convert.ToString(drSPProduct["ExitLevelLevel6"])) ? "-" : Convert.ToString(drSPProduct["ExitLevelLevel6"])) + "</td>");
+                    sb.Append("</tr>");
+                }
+                if (exitCount > 0)
+                {
+                    var ExitAvg = Convert.ToString(Math.Round((exitTotalAmt / exitCount), 2));
+
+                    sb.Append("<tr>");
+                    sb.Append("<td style='padding: 8px;'>Exit Level Avg</td>");
+                    sb.Append("<td style='padding: 8px;'>" + ExitAvg + "</td>");
+                    sb.Append("</tr>");
+                }
+                sb.Append("</table>");
+                sb.Append("</td>");
+                sb.Append("</tr>");
+            }
+
+            if (!string.IsNullOrEmpty(Convert.ToString(drSPProduct["Participation Rate (PR)"])) && Convert.ToString(drSPProduct["Participation Rate (PR)"]) != "-")
+            {
+                sb.Append("<tr>");
+                sb.Append("<td style='padding: 8px;'><strong>Participation Rate (PR)</strong></td>");
+                sb.Append("<td style='padding: 8px;'>" + (string.IsNullOrEmpty(Convert.ToString(drSPProduct["Participation Rate (PR)"])) ? "-" : Convert.ToString(drSPProduct["Participation Rate (PR)"])) + "</td>");
+                sb.Append("</tr>");
+            }
+            if (!string.IsNullOrEmpty(Convert.ToString(drSPProduct["Yield"])) && Convert.ToString(drSPProduct["Yield"]) != "-")
+            {
+                sb.Append("<tr>");
+                sb.Append("<td style='padding: 8px;'><strong>Fixed Return</strong></td>");
+                sb.Append("<td style='padding: 8px;'>" + (string.IsNullOrEmpty(Convert.ToString(drSPProduct["Yield"])) ? "-" : Convert.ToString(drSPProduct["Yield"])) + "</td>");
+                sb.Append("</tr>");
+            }
+            if (!string.IsNullOrEmpty(Convert.ToString(drSPProduct["Strategy Payoff"])))
+            {
+                sb.Append("<tr>");
+                sb.Append("<td style='padding: 8px;'><strong>Stategy Payoff (on the Face Value)</strong></td>");
+                sb.Append("<td style='padding: 8px;'>" + (string.IsNullOrEmpty(Convert.ToString(drSPProduct["Strategy Payoff"])) ? "-" : Convert.ToString(drSPProduct["Strategy Payoff"])) + "</td>");
+                sb.Append("</tr>");
+            }
+            sb.Append("</table>");
+            sb.Append("<br>");
+
+            sb.Append("<table border='1' bordercolor='#9C9C9C' width='100%' style='border-collapse: collapse;font-family: Times New Roman;font-size: 8pt;color: #222222;background: #ffffff;line-height:normal;'>");
+            sb.Append("<tr bgcolor='#dae8ff'>");
+            sb.Append("<td style='padding: 8px;' colspan='2' align='left'><strong>VALUATION SCENARIO DETAILS AILS AS ON VALUATION DATE</strong></td>");
+            sb.Append("</tr>");
+
+            if (!string.IsNullOrEmpty(Convert.ToString(drSPProduct["Valuation Date"])))
+            {
+                sb.Append("<tr>");
+                sb.Append("<td style='padding: 8px;width: 50%'><strong>Valuation Date</strong></td>");
+                sb.Append("<td style='padding: 8px;'><strong>" + (string.IsNullOrEmpty(Convert.ToString(drSPProduct["Valuation Date"])) ? "-" : ((Convert.ToString(drSPProduct["Valuation Date"]).Length > 9) ? (Convert.ToString(drSPProduct["Valuation Date"])).Substring(0, 9) : (Convert.ToString(drSPProduct["Valuation Date"])))) + "</strong></td>");
+                sb.Append("</tr>");
+            }
+            if (!string.IsNullOrEmpty(Convert.ToString(drSPProduct["Current Underlying Level"])) && Convert.ToString(drSPProduct["Current Underlying Level"]) != "0")
+            {
+                sb.Append("<tr>");
+                sb.Append("<td style='padding: 8px;'><strong>Current Underlying Level</strong></td></td>");
+                sb.Append("<td style='padding: 8px;'>" + (string.IsNullOrEmpty(Convert.ToString(drSPProduct["Current Underlying Level"])) ? "-" : Convert.ToString(drSPProduct["Current Underlying Level"])) + "</td>");
+                sb.Append("</tr>");
+            }
+            if (!string.IsNullOrEmpty(Convert.ToString(drSPProduct["Current Underlying Performance"])))
+            {
+                sb.Append("<tr>");
+                sb.Append("<td style='padding: 8px;'><strong>Current Underlying Performance</strong></td>");
+                sb.Append("<td style='padding: 8px;'>" + (string.IsNullOrEmpty(Convert.ToString(drSPProduct["Current Underlying Performance"])) ? "-" : Convert.ToString(Math.Round((Convert.ToDecimal(drSPProduct["Current Underlying Performance"]) * 100), 0)) + "%") + "</td>");
+                sb.Append("</tr>");
+            }
+
+            var supNum = 1;
+            if (!string.IsNullOrEmpty(drSPProduct["PP/Non PP"].ToString()) && Convert.ToString(drSPProduct["PP/Non PP"]).ToLower() == "yes")
+                supNum = 0;
+
+            if (!string.IsNullOrEmpty(Convert.ToString(drSPProduct["Maturity Value per unit1  (as per current underlying performance)"])))
+            {
+                sb.Append("<tr>");
+                sb.Append("<td style='padding: 8px;'><strong>Maturity Value per Unit<sup>" + (2 - supNum) + "</sup> (as per current underlying performance)</strong></td>");
+                sb.Append("<td style='padding: 8px;'>" + (string.IsNullOrEmpty(Convert.ToString(drSPProduct["Maturity Value per unit1  (as per current underlying performance)"])) ? "-" : Convert.ToString(drSPProduct["Maturity Value per unit1  (as per current underlying performance)"])) + "</td>");
+                sb.Append("</tr>");
+            }
+            if (!string.IsNullOrEmpty(Convert.ToString(drSPProduct["Current Value per unit2"])))
+            {
+                sb.Append("<tr>");
+                sb.Append("<td style='padding: 8px;'><strong>Current Value per Unit<sup>" + (3 - supNum) + "</sup></strong></td>");
+                sb.Append("<td style='padding: 8px;'>" + (string.IsNullOrEmpty(Convert.ToString(drSPProduct["Current Value per unit2"])) ? "-" : Convert.ToString(drSPProduct["Current Value per unit2"])) + "</td>");
+                sb.Append("</tr>");
+            }
+            if (!string.IsNullOrEmpty(Convert.ToString(drSPProduct["Remaining Tenure"])))
+            {
+                sb.Append("<tr>");
+                sb.Append("<td style='padding: 8px;'><strong>Remaining Tenure</strong></td>");
+                sb.Append("<td style='padding: 8px;'>" + (string.IsNullOrEmpty(Convert.ToString(drSPProduct["Remaining Tenure"])) ? "-" : Convert.ToString(Math.Round(GetDecimalNUmber(Convert.ToString(drSPProduct["Remaining Tenure"]).Trim()), 2))) + " Months</td>");
+                sb.Append("</tr>");
+            }
+            sb.Append("</table>");
+
+            sb.Append("<br>");
+
+            if (!string.IsNullOrWhiteSpace(Convert.ToString(drSPProduct["Underlying"])) && !string.IsNullOrEmpty(Convert.ToString(drSPProduct["Underlying"])) && (Convert.ToString(drSPProduct["Underlying"]).ToUpper()).Contains("HDFC BANK"))
+            {
+                sb.Append("<div style='font-family: Times New Roman;font-size: 8pt;' ><sup>1</sup> Principal protection is only to the extent of Face Value of the Market Linked Debenture (MLD). For more details, please refer to Termsheet.");
+
+                sb.Append("<div style='font-family: Times New Roman;font-size: 8pt;' ><sup>2</sup> This reflects the Value at Maturity that the investment would payout, if the exit price of the underlying is same as the current level of the underlying. This is in no way a reflection of the present market value of the investment, which may vary significantly based on prevailing market conditions.");
+
+                sb.Append("<div style='font-family: Times New Roman;font-size: 8pt;' ><sup>3</sup> Kindly note that issuer is not offering exit at these valuations. In case of early exit, the realizable value may differ by up to 5%.");
+
+                sb.Append("<div style='font-family: Times New Roman;font-size: 8pt;' ><sup>4</sup> The initial fixing level is adjusted for stock split and other corporate action, as applicable.</div>");
+
+            }
+            else if (!string.IsNullOrEmpty(drSPProduct["Product Name"].ToString()) && (Convert.ToString(drSPProduct["Product Name"]).ToUpper().Contains("YIELD PLUS") || Convert.ToString(drSPProduct["Product Name"]).ToUpper().Contains("FIXED COUPON")))
+            {
+                sb.Append("<div style='font-family: Times New Roman;font-size: 8pt;' ><sup>1</sup> Principal protection is only to the extent of Face Value of the Market Linked Debenture (MLD). For more details, please refer to Termsheet.</div>");
+
+                sb.Append("<div style='font-family: Times New Roman;font-size: 8pt;' ><sup>2</sup> This value reflects the Maturity Value that the investment would payout if the exit price of the underlying is same as the current level of the underlying. This is in no way a reflection of the present market value of the investment, which may vary significantly based on prevailing market conditions.</div>");
+
+                sb.Append("<div style='font-family: Times New Roman;font-size: 8pt;' ><sup>3</sup> Kindly note that issuer is not offering exit at these valuations. In case of secondary market sell, the realizable value may differ up to 2% p.a. for the remaining tenor.</div>");
+            }
+            else if (!string.IsNullOrEmpty(drSPProduct["PP/Non PP"].ToString()) && Convert.ToString(drSPProduct["PP/Non PP"]).ToLower() == "yes")
+            {
+                sb.Append("<div style='font-family: Times New Roman;font-size: 8pt;' ><sup>1</sup> Principal protection is only to the extent of Face Value of the Market Linked Debenture (MLD). For more details, please refer to Termsheet.</div>");
+
+                sb.Append("<div style='font-family: Times New Roman;font-size: 8pt;' ><sup>2</sup> This value reflects the Maturity Value that the investment would payout if the exit price of the underlying is same as the current level of the underlying. This is in no way a reflection of the present market value of the investment, which may vary significantly based on prevailing market conditions.</div>");
+
+                sb.Append("<div style='font-family: Times New Roman;font-size: 8pt;' ><sup>3</sup> Kindly note that issuer is not offering exit at these valuations. In case of secondary market sell, the realizable value may differ by up to 5%.</div>");
+            }
+            else
+            {
+                sb.Append("<div style='font-family: Times New Roman;font-size: 8pt;' ><sup>1</sup> This value reflects the Maturity Value that the investment would payout if the exit price of the underlying is same as the current level of the underlying. This is in no way a reflection of the present market value of the investment, which may vary significantly based on prevailing market conditions.</div>");
+
+                sb.Append("<div style='font-family: Times New Roman;font-size: 8pt;' ><sup>2</sup> Kindly note that issuer is not offering exit at these valuations. In case of secondary market sell, the realizable value may differ by up to 5%.</div>");
+            }
+
+            sb.Append("</body>");
+            sb.Append("</html>");
+
+            #endregion
+
+            return sb.ToString();
+        }
+
+        private DataTable GetDataTable(string FilePath)
+        {
+            DataTable dtExcelData = new DataTable();
+            string conString = string.Empty;
+            string extension = Path.GetExtension(FilePath);
+            if (!extension.Contains("xls"))
+            {
+                return null;
+            }
+
+            switch (extension)
+            {
+                case ".xls": //Excel 97-03
+                    conString = "Provider=Microsoft.JET.OLEDB.4.0;Data Source=" + FilePath + ";Extended Properties='Excel 8.0;HDR=No;IMEX=1';";
+                    break;
+                case ".xlsx": //Excel 07 or higher
+                    conString = "Provider=Microsoft.ACE.OLEDB.12.0;Data Source=" + FilePath + ";Extended Properties='Excel 12.0;HDR=No;IMEX=1';";
+                    break;
+            }
+
+            using (OleDbConnection excel_con = new OleDbConnection(conString))
+            {
+                excel_con.Open();
+                string sheet1 = excel_con.GetOleDbSchemaTable(OleDbSchemaGuid.Tables, null).Rows[0]["TABLE_NAME"].ToString();
+                using (OleDbDataAdapter oda = new OleDbDataAdapter("SELECT * FROM [" + sheet1 + "] ", excel_con))
+                {
+                    oda.Fill(dtExcelData);
+                }
+            }
+
+            return dtExcelData;
+        }
+
+        private decimal GetDecimalNUmber(string str)
+        {
+            decimal number;
+            bool isNumeric = decimal.TryParse(str, out number);
+
+            if (isNumeric)
+            {
+                return Math.Round(Convert.ToDecimal(number), 2);
+            }
+            else
+            {
+                return 0;
+            }
+        }
+
+        private string CreateSPSOAExcelForExportData(string SPS_ECSL_DATE, System.Data.DataSet ds, string _FileName)
+        {
+            try
+            {
+                var ExcelFilePath = System.Configuration.ConfigurationManager.AppSettings["SPSOA_ExcelGenerate"];
+                var SPSOAFolderName = System.Configuration.ConfigurationManager.AppSettings["SPSOA_FolderName"];
+                ExcelFilePath = ExcelFilePath.Replace("{SPSOA_FolderName}", SPSOAFolderName);
+
+                ExcelFilePath = ExcelFilePath + "\\" + SPS_ECSL_DATE + "\\";
+
+                if (!Directory.Exists(ExcelFilePath))
+                    Directory.CreateDirectory(ExcelFilePath);
+
+                _FileName = _FileName + "_" + DateTime.Now.ToString("yyyy-MM-dd hhmmss");
+                ExportToExcel excelUtility = new ExportToExcel();
+                var absolutePath = excelUtility.ExcelForExportData(ds, _FileName, ExcelFilePath, "");
+
+                var relativePath = ExcelFilePath + _FileName + ".xlsx";
+
+                return relativePath;
+            }
+            catch (Exception ex)
+            {
+                throw ex;
+            }
+        }
+
+        public bool BulkUploadData(string _strSqlConn, DataTable dataTable, string DestinationTableName)
+        {
+            bool result = false;
+            try
+            {
+                using (SqlConnection connection = new SqlConnection(_strSqlConn))
+                {
+
+                    SqlBulkCopy bulkCopy = new SqlBulkCopy(connection);
+
+                    // set the destination table name
+                    bulkCopy.DestinationTableName = DestinationTableName;
+                    connection.Open();
+
+                    // write the data in the "dataTable"
+                    bulkCopy.WriteToServer(dataTable);
+                    connection.Close();
+                }
+
+                result = true;
+                return result;
+            }
+            catch (Exception ex)
+            {
+                return result;
+            }
+        }
+
+        public DataSet GetDataSet(string sql, object parameterObj, bool isSqlText, string _strSqlConn)
+        {
+            DataSet dsResult = new DataSet();
+            
+            using (var _con = new SqlConnection(_strSqlConn))
+            {
+                using (var _cmd = new SqlCommand())
+                {
+                    _cmd.CommandTimeout = 0;
+                    _cmd.CommandText = sql;
+                    _cmd.Connection = _con;
+
+                    if (parameterObj != null)
+                    {
+                        var Infos = parameterObj.GetType().GetProperties();
+                        foreach (var item in Infos)
+                        {
+                            _cmd.Parameters.Add(new SqlParameter('@' + item.Name, item.GetValue(parameterObj, null)));
+                        }
+                    }
+
+                    _cmd.CommandType = isSqlText ? CommandType.Text : CommandType.StoredProcedure;
+                    _con.Open();
+                    SqlDataAdapter objSqlDataAdapter = new SqlDataAdapter(_cmd);
+                    objSqlDataAdapter.Fill(dsResult);
+
+                    if (_con.State != ConnectionState.Closed)
+                        _con.Close();
+                    return dsResult;
+                }
+            }
+        }
+
+        public void ConfigureEmailForSPSOAMailer(string TemplateName, string ActionName, string fileName, DateTime SOADate)
+        {
+            string EmailSubject = "SP SOA Generated for " + SOADate.ToString("dd-MMM-yyyy");
+            string FromAddress = "";
+            string ToAddress = "";
+            string CCAddress = "";
+            string BCCAddress = "";
+            string emailBody = "";
+            string emailBodyContent = "";
+            string FromAddressMask = string.Empty;            
+
+            try
+            {
+                var emailTemplateObject = new EmailTemplateT();
+                emailTemplateObject = getEmailTemplate(TemplateName, ActionName);
+                if (emailTemplateObject != null && emailTemplateObject.IsActive)
+                {
+                    ToAddress = emailTemplateObject.DefaultToAddress;
+                    FromAddress = emailTemplateObject.DefaultFromAddress;
+                    CCAddress = emailTemplateObject.DefaultCCAddress;
+                    BCCAddress = emailTemplateObject.DefaultBCCAddress;
+                    emailBodyContent = emailTemplateObject.Template;
+
+                    emailBody = emailBodyContent;
+
+                    Factory.EmailScheduler.createEmailRequest(FromAddress, ToAddress, CCAddress, BCCAddress, EmailSubject, emailBody, fileName, string.Empty, FromAddressMask, 1, TemplateName, "SalesOps");
+                }
+            }
+            catch (Exception ex)
+            {
+                throw ex;
+            }
+        }
+
+        public EmailTemplateT getEmailTemplate(string TemplateName, string ActionName, bool IsDefault = false)
+        {
+            var result = new EmailTemplateT();
+            var Store = GetStore();
+            result = Store.GetQueriedObj<EmailTemplateT>("[dbo].[EmailTemplateGet]", new { TemplateName, ActionName });
+            return result;
+        }
+
+        #endregion
