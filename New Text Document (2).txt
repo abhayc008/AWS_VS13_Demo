@@ -7,6 +7,11 @@ MAC Address :B8-2A-72-C1-BE-83
 HOST Name : 14H-LTP32E-0160
 IP Address : 10.216.30.138
 
+
+
+LRS final setup
+https://teams.microsoft.com/l/meetup-join/19%3ameeting_MGMwMDlhZjYtZjdlMi00NmRjLWE0YjEtMTVhOTA3N2U5N2Q5%40thread.v2/0?context=%7b%22Tid%22%3a%2202dbf22a-371e-4cac-bdbc-60197ffafbe8%22%2c%22Oid%22%3a%222719c6c0-89d7-41df-9a0c-931aad7b2a8c%22%7d
+
 Harsh.jha
 killol.thkore
 kunal
